@@ -4,7 +4,7 @@
 #include "Module/GameInstanceModule.h"
 #include "PPOBGameInstanceModule.generated.h"
 
-class AFGDecorationTemplate;
+class AFGBuildable;
 struct FFGAttachmentPoint;
 
 UCLASS()
@@ -29,6 +29,12 @@ private:
 	FVector PowerPoleAttachmentPoint;
 
 	/// Relative transform for the attachment points added to buildings.
+	/// This should really be referencing AFGDecorationTemplate subclasses, as that's what the
+	/// attachment points will be added to, but it turns out that there're some mods that replace the
+	/// entire decorator template with their own instead of being kind and adding to the existing one.
+	/// In an attempt to be compatible with them, we're referencing buildables instead and will fetch
+	/// their assigned decorator at runtime. If multiple buildables reference the same decorator, then
+	/// only one of them needs to be listed here.
 	UPROPERTY(Category = "Attachment Points", EditDefaultsOnly)
-	TMap<TSubclassOf<AFGDecorationTemplate>, FVector> BuildingAttachmentPoints;
+	TMap<TSubclassOf<AFGBuildable>, FVector> BuildingAttachmentPoints;
 };
