@@ -3,6 +3,7 @@
 #include "Buildables/FGBuildableConveyorLift.h"
 #include "Buildables/FGBuildablePassthrough.h"
 #include "FGFactoryConnectionComponent.h"
+#include "Hologram/FGConveyorAttachmentHologram.h"
 #include "Patching/NativeHookManager.h"
 
 void FVerticalLogisticsQoLModule::StartupModule()
@@ -10,6 +11,7 @@ void FVerticalLogisticsQoLModule::StartupModule()
 	if constexpr (!WITH_EDITOR)
 	{
 		FixLostPassthroughLinks();
+		FixHologramLocking();
 	}
 }
 
@@ -115,6 +117,39 @@ void FVerticalLogisticsQoLModule::FixLostPassthroughLinks()
 	SUBSCRIBE_METHOD_AFTER(AFGBuildableConveyorLift::DuplicateLift, hook);
 	SUBSCRIBE_METHOD_AFTER(AFGBuildableConveyorLift::Merge, hook);
 	SUBSCRIBE_METHOD_AFTER(AFGBuildableConveyorLift::Split, hook);
+}
+
+void FVerticalLogisticsQoLModule::FixHologramLocking()
+{
+	// The hologram throws away its snap state in PreHologramPlacement on the assumption that it'll be
+	// followed by a call to TrySnapToActor to re-calculate the state, however that won't happen when
+	// the hologram is locked so it just ends up forgetting what it's snapped to.
+
+	SUBSCRIBE_UOBJECT_METHOD(AFGConveyorAttachmentHologram, PreHologramPlacement,
+		[](auto& scope, AFGConveyorAttachmentHologram* hologram, const FHitResult& hitResult, bool callForChildren)
+		{
+			if (!hologram->IsHologramLocked())
+				return;
+
+			// The hologram is locked, make sure that the snap state is restored.
+
+			const auto upgradedConveyorAttachment = hologram->mUpgradedConveyorAttachment;
+			const auto snappedConveyor = hologram->mSnappedConveyor;
+			const auto snappedConveyorOffset = hologram->mSnappedConveyorOffset;
+
+			scope(hologram, hitResult, callForChildren);
+
+			if (hologram->mUpgradedConveyorAttachment == nullptr)
+			{
+				hologram->mUpgradedConveyorAttachment = upgradedConveyorAttachment;
+			}
+
+			if (hologram->mSnappedConveyor == nullptr)
+			{
+				hologram->mSnappedConveyor = snappedConveyor;
+				hologram->mSnappedConveyorOffset = snappedConveyorOffset;
+			}
+		});
 }
 
 IMPLEMENT_MODULE(FVerticalLogisticsQoLModule, VerticalLogisticsQoL)
