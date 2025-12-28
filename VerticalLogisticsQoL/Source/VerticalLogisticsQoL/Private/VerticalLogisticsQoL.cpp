@@ -4,6 +4,7 @@
 #include "Buildables/FGBuildablePassthrough.h"
 #include "FGFactoryConnectionComponent.h"
 #include "Hologram/FGConveyorAttachmentHologram.h"
+#include "Hologram/FGConveyorLiftHologram.h"
 #include "Patching/NativeHookManager.h"
 
 void FVerticalLogisticsQoLModule::StartupModule()
@@ -12,6 +13,8 @@ void FVerticalLogisticsQoLModule::StartupModule()
 	{
 		FixLostPassthroughLinks();
 		FixHologramLocking();
+		FixLiftOnAttachmentOffByHalf();
+		FixAttachmentOnLiftOffByHalf();
 	}
 }
 
@@ -149,6 +152,90 @@ void FVerticalLogisticsQoLModule::FixHologramLocking()
 				hologram->mSnappedConveyor = snappedConveyor;
 				hologram->mSnappedConveyorOffset = snappedConveyorOffset;
 			}
+		});
+}
+
+void FVerticalLogisticsQoLModule::FixLiftOnAttachmentOffByHalf()
+{
+	// If the base of the lift isn't aligned to 1m, then the extra offset should be applied after
+	// rounding to the step height so that you don't just round away the offset. The game does this
+	// properly for passthroughs, but for vertical connections it adds the extra 0.5m before calculating
+	// the steps. We can't easily patch the dodgy bit of code that deals with vertical connections in
+	// this function, so we'll have to hackily hide the connection from it before calling so that it
+	// skips that code and then we can manually fix it up afterwards.
+
+	SUBSCRIBE_METHOD(AFGConveyorLiftHologram::UpdateTopTransform,
+		[](auto& scope, AFGConveyorLiftHologram* hologram, const FHitResult& hitResult, const FRotator& rotation)
+		{
+			if (hologram->mSnappedPassthroughs[0] != nullptr)
+				return;	// Snapped to a passthrough.
+			UFGFactoryConnectionComponent* connection = hologram->mSnappedConnectionComponents[0];
+			if (connection == nullptr)
+				return;	// Not snapped to a connection.
+			const float normalUp = connection->GetConnectorNormal().Z;
+			if (FMath::Abs(normalUp) <= 0.5f)
+				return;	// The snapped connection isn't vertical.
+
+			// The original function uses 2.5m and 3.5m for vertical connections, but we've taken off the extra
+			// 0.5m and will apply it afterwards.
+			const float minimumHeight = normalUp >= 0.0f ? 200.0f : 300.0f;
+			const float origMinimumHeight = hologram->mMinimumHeight;
+
+			// Call the original function as if there's no connection.
+			{
+				hologram->mSnappedConnectionComponents[0] = nullptr;
+				hologram->mMinimumHeight = minimumHeight;
+
+				scope(hologram, hitResult, rotation);
+
+				hologram->mSnappedConnectionComponents[0] = connection;
+				hologram->mMinimumHeight = origMinimumHeight;
+			}
+
+			// Add the 0.5m back on.
+			FVector top = hologram->mTopTransform.GetLocation();
+			top.Z += top.Z >= 0.0f ? 50.0f : -50.0f;
+			hologram->mTopTransform.SetLocation(top);
+		});
+}
+
+void FVerticalLogisticsQoLModule::FixAttachmentOnLiftOffByHalf()
+{
+	// The offset used for placing attachment on lifts doesn't account for the extra length added by
+	// vertical connections, which can push it off grid.
+
+	SUBSCRIBE_UOBJECT_METHOD(AFGBuildableConveyorLift, FindOffsetClosestToLocation,
+		[](auto& scope, const AFGBuildableConveyorLift* lift, const FVector& location)
+		{
+			const float offset = scope(lift, location);
+			if (FMath::RoundToInt(offset) % 100 != 0)
+				return;	// Looks like the bug has been fixed?
+
+			float extraOffset;
+
+			if (const AFGBuildablePassthrough* passthrough = lift->mSnappedPassthroughs[0])
+			{
+				// The lift starts from the center of the passthrough, which means that there's half of the
+				// passthrough's thickness on either side of the lift before we get to the usable bits. When using
+				// 1m foundations, half is 0.5m and that throws off the alignment.
+				const int halfThickness = FMath::RoundToInt(0.5f * passthrough->mSnappedBuildingThickness);
+				const int remainder = halfThickness % 100;
+				if (remainder == 0)
+					return;
+				extraOffset = static_cast<float>(remainder);
+			}
+			else
+			{
+				// Vertical connections on a splitter/merger are inset by 0.5m.
+				const UFGFactoryConnectionComponent* connection = lift->mConnection0->GetConnection();
+				if (connection == nullptr)
+					return;	// Not connected to anything.
+				if (FMath::Abs(connection->GetConnectorNormal().Z) <= 0.5f)
+					return;	// Not a vertical connection.
+				extraOffset = 50.0f;
+			}
+
+			scope.Override(offset + FMath::Sign(offset) * extraOffset);
 		});
 }
 

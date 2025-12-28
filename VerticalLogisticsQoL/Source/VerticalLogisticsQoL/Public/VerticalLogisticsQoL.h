@@ -12,4 +12,6 @@ public:
 private:
 	void FixLostPassthroughLinks();
 	void FixHologramLocking();
+	void FixLiftOnAttachmentOffByHalf();
+	void FixAttachmentOnLiftOffByHalf();
 };
