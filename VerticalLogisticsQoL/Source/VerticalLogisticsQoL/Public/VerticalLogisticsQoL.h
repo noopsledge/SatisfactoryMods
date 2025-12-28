@@ -14,4 +14,5 @@ private:
 	void FixHologramLocking();
 	void FixLiftOnAttachmentOffByHalf();
 	void FixAttachmentOnLiftOffByHalf();
+	void FixClearanceWarnings();
 };

@@ -15,6 +15,7 @@ void FVerticalLogisticsQoLModule::StartupModule()
 		FixHologramLocking();
 		FixLiftOnAttachmentOffByHalf();
 		FixAttachmentOnLiftOffByHalf();
+		FixClearanceWarnings();
 	}
 }
 
@@ -236,6 +237,43 @@ void FVerticalLogisticsQoLModule::FixAttachmentOnLiftOffByHalf()
 			}
 
 			scope.Override(offset + FMath::Sign(offset) * extraOffset);
+		});
+}
+
+void FVerticalLogisticsQoLModule::FixClearanceWarnings()
+{
+	// The opposing vertical connections on a conveyor attachment have the same location, it's just the
+	// rotation that differs. This means that a lift on the bottom connection has the same location as a
+	// lift on the top connection, which triggers the overlap warning. We need to find what's connected
+	// to the opposing connection and ignore it when doing clearance checks.
+
+	SUBSCRIBE_UOBJECT_METHOD_AFTER(AFGConveyorLiftHologram, GetIgnoredClearanceActors,
+		[](const AFGConveyorLiftHologram* hologram, TSet<AActor*>& ignoredActors)
+		{
+			for (const UFGFactoryConnectionComponent* connection : hologram->mSnappedConnectionComponents)
+			{
+				if (connection == nullptr)
+					continue;
+
+				const FVector connectorNormal = connection->GetConnectorNormal();
+				if (FMath::Abs(connectorNormal.Z) <= 0.5f)
+					continue;
+				const FVector connectorLocation = connection->GetConnectorLocation();
+
+				for (auto* otherConnection : TInlineComponentArray<UFGFactoryConnectionComponent*>(connection->GetOuterBuildable()))
+				{
+					if (otherConnection == connection)
+						continue;	// We only care about other connections.
+					UFGFactoryConnectionComponent* connectedTo = otherConnection->GetConnection();
+					if (connectedTo == nullptr)
+						continue;	// Not connected to anything, so there's nothing to clip with.
+					if (!otherConnection->GetConnectorLocation().Equals(connectorLocation))
+						continue;	// Doesn't have the same location, so it won't clip.
+					if (!FVector::Coincident(otherConnection->GetConnectorNormal(), -connectorNormal))
+						continue;	// Not going in the opposite direction.
+					ignoredActors.Add(connectedTo->GetOuterBuildable());
+				}
+			}
 		});
 }
 
