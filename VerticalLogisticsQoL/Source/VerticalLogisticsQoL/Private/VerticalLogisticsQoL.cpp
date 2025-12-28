@@ -7,6 +7,18 @@
 #include "Hologram/FGConveyorLiftHologram.h"
 #include "Patching/NativeHookManager.h"
 
+namespace
+{
+
+bool IsVerticalConnector(float normalUp)
+{
+	// We aren't expecting any diagonal connectors, so really this could be closer to 1, but 0.5 is
+	// being used to match the checks that the game does in similar places.
+	return FMath::Abs(normalUp) > 0.5f;
+}
+
+} // namespace
+
 void FVerticalLogisticsQoLModule::StartupModule()
 {
 	if constexpr (!WITH_EDITOR)
@@ -174,7 +186,7 @@ void FVerticalLogisticsQoLModule::FixLiftOnAttachmentOffByHalf()
 			if (connection == nullptr)
 				return;	// Not snapped to a connection.
 			const float normalUp = connection->GetConnectorNormal().Z;
-			if (FMath::Abs(normalUp) <= 0.5f)
+			if (!IsVerticalConnector(normalUp))
 				return;	// The snapped connection isn't vertical.
 
 			// The original function uses 2.5m and 3.5m for vertical connections, but we've taken off the extra
@@ -231,7 +243,7 @@ void FVerticalLogisticsQoLModule::FixAttachmentOnLiftOffByHalf()
 				const UFGFactoryConnectionComponent* connection = lift->mConnection0->GetConnection();
 				if (connection == nullptr)
 					return;	// Not connected to anything.
-				if (FMath::Abs(connection->GetConnectorNormal().Z) <= 0.5f)
+				if (!IsVerticalConnector(connection->GetConnectorNormal().Z))
 					return;	// Not a vertical connection.
 				extraOffset = 50.0f;
 			}
@@ -256,7 +268,7 @@ void FVerticalLogisticsQoLModule::FixClearanceWarnings()
 					continue;
 
 				const FVector connectorNormal = connection->GetConnectorNormal();
-				if (FMath::Abs(connectorNormal.Z) <= 0.5f)
+				if (!IsVerticalConnector(connectorNormal.Z))
 					continue;
 				const FVector connectorLocation = connection->GetConnectorLocation();
 
