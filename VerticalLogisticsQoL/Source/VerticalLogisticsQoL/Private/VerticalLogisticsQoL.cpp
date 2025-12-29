@@ -28,6 +28,7 @@ void FVerticalLogisticsQoLModule::StartupModule()
 		FixLiftOnAttachmentOffByHalf();
 		FixAttachmentOnLiftOffByHalf();
 		FixClearanceWarnings();
+		AllowConnectionToExistingAttachment();
 	}
 }
 
@@ -286,6 +287,34 @@ void FVerticalLogisticsQoLModule::FixClearanceWarnings()
 					ignoredActors.Add(connectedTo->GetOuterBuildable());
 				}
 			}
+		});
+}
+
+void FVerticalLogisticsQoLModule::AllowConnectionToExistingAttachment()
+{
+	// The base implementation filters out vertical connections because the normal for a lift connection
+	// points out horizontally, which it doesn't see as aligned with vertical connections so it doesn't
+	// allow them.
+
+	SUBSCRIBE_METHOD(AFGConveyorLiftHologram::CanConnectToConnection,
+		[](auto& scope, const AFGConveyorLiftHologram* hologram, UFGFactoryConnectionComponent* from, UFGFactoryConnectionComponent* to)
+		{
+			if (scope(hologram, from, to))
+				return;	// Already handled.
+			if (from == nullptr || to == nullptr)
+				return;	// Nothing to connect.
+			const FVector toNormal = to->GetConnectorNormal();
+			if (!IsVerticalConnector(toNormal.Z))
+				return;	// Not a vertical connection, not our problem.
+			const FVector toLocation = to->GetConnectorLocation();
+			const FVector connectionVector = toLocation - from->GetConnectorLocation();
+			if (!FMath::IsNearlyZero(connectionVector.X) || !FMath::IsNearlyZero(connectionVector.Y))
+				return;	// Not aligned horizontally with the lift.
+			if (FMath::Abs(connectionVector.Z) > hologram->mStepHeight + to->GetConnectorClearance())
+				return;	// Too far away vertically.
+			if ((toNormal.Z >= 0.0f) == (toLocation.Z >= hologram->GetActorLocation().Z))
+				return;	// Wrong side.
+			scope.Override(true);
 		});
 }
 

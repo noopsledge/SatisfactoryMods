@@ -15,4 +15,5 @@ private:
 	void FixLiftOnAttachmentOffByHalf();
 	void FixAttachmentOnLiftOffByHalf();
 	void FixClearanceWarnings();
+	void AllowConnectionToExistingAttachment();
 };
