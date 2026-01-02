@@ -16,4 +16,5 @@ private:
 	void FixAttachmentOnLiftOffByHalf();
 	void FixClearanceWarnings();
 	void AllowConnectionToExistingAttachment();
+	void PrepareCustomAttachmentHologram();
 };

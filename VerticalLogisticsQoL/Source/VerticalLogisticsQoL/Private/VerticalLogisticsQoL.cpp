@@ -2,10 +2,12 @@
 
 #include "Buildables/FGBuildableConveyorLift.h"
 #include "Buildables/FGBuildablePassthrough.h"
+#include "Equipment/FGBuildGunBuild.h"
 #include "FGFactoryConnectionComponent.h"
 #include "Hologram/FGConveyorAttachmentHologram.h"
 #include "Hologram/FGConveyorLiftHologram.h"
 #include "Patching/NativeHookManager.h"
+#include "VLQoLGameInstanceModule.h"
 
 namespace
 {
@@ -29,6 +31,7 @@ void FVerticalLogisticsQoLModule::StartupModule()
 		FixAttachmentOnLiftOffByHalf();
 		FixClearanceWarnings();
 		AllowConnectionToExistingAttachment();
+		PrepareCustomAttachmentHologram();
 	}
 }
 
@@ -315,6 +318,26 @@ void FVerticalLogisticsQoLModule::AllowConnectionToExistingAttachment()
 			if ((toNormal.Z >= 0.0f) == (toLocation.Z >= hologram->GetActorLocation().Z))
 				return;	// Wrong side.
 			scope.Override(true);
+		});
+}
+
+void FVerticalLogisticsQoLModule::PrepareCustomAttachmentHologram()
+{
+	// Our hologram expects to be given the regular recipe, and it will switch to the vertical one based
+	// on the build mode, so we need to make sure that the vertical recipe is never directly used. This
+	// can only happen when sampling an existing vertical attachment, as there's no other way to select
+	// them in the build menu.
+
+	SUBSCRIBE_METHOD(UFGBuildGunStateBuild::SetActiveRecipe,
+		[](auto& scope, UFGBuildGunStateBuild* state, TSubclassOf<UFGRecipe> recipe)
+		{
+			if (auto* gameInstanceModule = UVLQoLGameInstanceModule::Get(state))
+			{
+				if (TSubclassOf<UFGRecipe> overrideRecipe = gameInstanceModule->GetRegularConveyorAttachmentRecipe(recipe))
+				{
+					scope(state, overrideRecipe);
+				}
+			}
 		});
 }
 
