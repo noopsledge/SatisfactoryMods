@@ -1,11 +1,13 @@
 #include "VerticalLogisticsQoL.h"
 
+#include "Buildables/FGBuildableConveyorAttachment.h"
 #include "Buildables/FGBuildableConveyorLift.h"
 #include "Buildables/FGBuildablePassthrough.h"
 #include "Equipment/FGBuildGunBuild.h"
 #include "FGFactoryConnectionComponent.h"
 #include "Hologram/FGConveyorAttachmentHologram.h"
 #include "Hologram/FGConveyorLiftHologram.h"
+#include "Net/UnrealNetwork.h"
 #include "Patching/NativeHookManager.h"
 #include "VLQoLGameInstanceModule.h"
 
@@ -32,6 +34,7 @@ void FVerticalLogisticsQoLModule::StartupModule()
 		FixClearanceWarnings();
 		AllowConnectionToExistingAttachment();
 		PrepareCustomAttachmentHologram();
+		NetworkVerticalAttachmentFlowDirection();
 	}
 }
 
@@ -339,6 +342,188 @@ void FVerticalLogisticsQoLModule::PrepareCustomAttachmentHologram()
 				}
 			}
 		});
+}
+
+void FVerticalLogisticsQoLModule::NetworkVerticalAttachmentFlowDirection()
+{
+	// Each attachment saves the direction of its connection components after it's constructed by the
+	// hologram, which is needed for vertical attachments because the direction of their top and bottom
+	// connections can change depending on how the attachment was built. This data (mSavedDirections)
+	// isn't available on non-authoritative clients, so they won't know the direction of those
+	// connections. We don't need all of the saved directions to be replicated, the side connections are
+	// static and the top and bottom connections are in opposing directions, so everything can be
+	// inferred from just a single flag.
+	//
+	// Adding this flag is a whole other problem, we can't just extend the attachment class because that
+	// would throw off everything in the derived classes. Fortunately there's eome padding at the end of
+	// mCachedInventorySize that we can use for some extra storage, all we need to do is make a new
+	// FProperty and point it to that padding. This will obviously blow up if the layout changes in
+	// future updates, but that's the same for any of the game structures that we access normally too so
+	// I don't think that's any more of a problem. The only issue would be if another mod is equally
+	// mischievous and has another use for that padding...
+	//
+	// If the padding disappears in the future, plan B is to remove the mHologramOverrides property and
+	// use that space instead; our new hologram makes that property obselete. However that's more likely
+	// to be noticed by other mods so that's being left as a last resort.
+
+	static constexpr size_t isUpwardsFlowOffset =
+		STRUCT_OFFSET(AFGBuildableConveyorAttachment, mCachedInventorySize)
+		+ sizeof(AFGBuildableConveyorAttachment::mCachedInventorySize);
+
+	static_assert(isUpwardsFlowOffset + sizeof(bool) <= STRUCT_OFFSET(AFGBuildableConveyorAttachment, mHologramOverrides));
+
+	// Creates the property and registers it with the networking system.
+	class LifetimeRepHook
+	{
+	public:
+		explicit LifetimeRepHook(UClass* buildableClass)
+		{
+			using namespace UECodeGen_Private;
+
+			FProperty* prevProperty = FindPreviousProperty(
+				buildableClass,
+				GET_MEMBER_NAME_CHECKED(AFGBuildableConveyorAttachment, mHologramOverrides));
+
+			check(prevProperty);
+			check(prevProperty->GetOffset_ForDebug() + prevProperty->GetSize() <= isUpwardsFlowOffset);
+
+			IsUpwardsFlowProperty = new FBoolProperty(buildableClass, FBoolPropertyParams
+			{
+				.NameUTF8 = "mIsUpwardsFlow",
+				.PropertyFlags = CPF_Net | CPF_Transient | CPF_NativeAccessSpecifierPrivate,
+				.Flags = EPropertyGenFlags::Bool | EPropertyGenFlags::NativeBool,
+				.ArrayDim = 1,
+				.ElementSize = sizeof(bool),
+				.SizeOfOuter = sizeof(AFGBuildableConveyorAttachment),
+				.SetBitFunc = [](void* o) { *(bool*)((unsigned char*)o + isUpwardsFlowOffset) = true; },
+			});
+
+			// By default the property gets added to the front of the property list, but we're re-linking it to
+			// be where it was if it was declared naturally as part of the class.
+			check(buildableClass->ChildProperties == IsUpwardsFlowProperty);
+			check(buildableClass->PropertyLink != IsUpwardsFlowProperty);
+			buildableClass->ChildProperties = IsUpwardsFlowProperty->Next;
+			IsUpwardsFlowProperty->Next = prevProperty->Next;
+			IsUpwardsFlowProperty->PropertyLinkNext = prevProperty->PropertyLinkNext;
+			prevProperty->Next = IsUpwardsFlowProperty;
+			prevProperty->PropertyLinkNext = IsUpwardsFlowProperty;
+
+			buildableClass->ClassFlags &= ~CLASS_ReplicationDataIsSetUp;
+		}
+
+		void operator()(const AFGBuildable* buildable, TArray<FLifetimeProperty>& OutLifetimeProps)
+		{
+			auto* attachment = Cast<AFGBuildableConveyorAttachment>(buildable);
+			if (attachment == nullptr)
+				return;
+
+			RegisterReplicatedLifetimeProperty(IsUpwardsFlowProperty, OutLifetimeProps,
+			{
+				// Don't need networking for non-vertical attachments as their directions are all static.
+				.Condition = IsVerticalAttachment(attachment) ? COND_InitialOnly : COND_Never,
+			});
+		}
+
+	private:
+		static FProperty* FindPreviousProperty(UClass* cls, FName name)
+		{
+			FProperty* prev = nullptr;
+			FProperty* curr = cls->PropertyLink;
+
+			while (curr != nullptr)
+			{
+				if (curr->GetFName() == name)
+					return prev;
+				prev = curr;
+				curr = curr->PropertyLinkNext;
+			}
+
+			return nullptr;
+		}
+
+		static bool IsVerticalAttachment(const AFGBuildableConveyorAttachment* attachment)
+		{
+			for (const UFGHologramOverride* override : attachment->mHologramOverrides)
+			{
+				if (override && override->IsA<UFGHologramOverride_ConveyorAttachment_LiftToFloor>())
+					return true;
+			}
+			return false;
+		}
+
+		FBoolProperty* IsUpwardsFlowProperty;
+	};
+
+	// Sets the new networked flag on the server, which the client uses to fix up the lift connection
+	// directions.
+	class BeginPlayHook
+	{
+	public:
+		void operator()(AFGBuildableConveyorAttachment* attachment) const
+		{
+			bool& isUpwardsFlow = *(bool*)((unsigned char*)attachment + isUpwardsFlowOffset);
+			TInlineComponentArray<UFGFactoryConnectionComponent*> connections(attachment);
+
+			if (attachment->HasAuthority())
+			{
+				isUpwardsFlow = GetIsUpwardsFlow(connections);
+			}
+			else
+			{
+				SetIsUpwardsFlow(connections, isUpwardsFlow);
+			}
+		}
+
+	private:
+		static bool GetIsUpwardsFlow(const TInlineComponentArray<UFGFactoryConnectionComponent*>& connections)
+		{
+			const FName bottomName = AFGConveyorAttachmentHologram::mLiftConnection_Top;
+
+			for (const UFGFactoryConnectionComponent* connection : connections)
+			{
+				if (connection->GetFName() == bottomName)
+				{
+					return connection->GetDirection() == EFactoryConnectionDirection::FCD_INPUT;
+				}
+			}
+
+			return false;
+		}
+
+		static void SetIsUpwardsFlow(const TInlineComponentArray<UFGFactoryConnectionComponent*>& connections, bool isUpwardsFlow)
+		{
+			const FName bottomName = AFGConveyorAttachmentHologram::mLiftConnection_Top;
+			const FName topName = AFGConveyorAttachmentHologram::mLiftConnection_Bottom;
+
+			for (UFGFactoryConnectionComponent* connection : connections)
+			{
+				if (connection->GetDirection() != EFactoryConnectionDirection::FCD_ANY)
+					continue;
+
+				const FName name = connection->GetFName();
+
+				if (name == bottomName)
+				{
+					connection->SetDirection(
+						isUpwardsFlow
+						? EFactoryConnectionDirection::FCD_INPUT
+						: EFactoryConnectionDirection::FCD_OUTPUT);
+				}
+				else if (name == topName)
+				{
+					connection->SetDirection(
+						isUpwardsFlow
+						? EFactoryConnectionDirection::FCD_OUTPUT
+						: EFactoryConnectionDirection::FCD_INPUT);
+				}
+			}
+		}
+	};
+
+	UClass* buildableClass = AFGBuildableConveyorAttachment::StaticClass();
+	auto* defaultBuildable = CastChecked<AFGBuildableConveyorAttachment>(buildableClass->GetDefaultObject());
+	SUBSCRIBE_METHOD_VIRTUAL_AFTER(AFGBuildable::GetLifetimeReplicatedProps, defaultBuildable, LifetimeRepHook(buildableClass));
+	SUBSCRIBE_METHOD_VIRTUAL_AFTER(AFGBuildableConveyorAttachment::BeginPlay, defaultBuildable, BeginPlayHook());
 }
 
 IMPLEMENT_MODULE(FVerticalLogisticsQoLModule, VerticalLogisticsQoL)

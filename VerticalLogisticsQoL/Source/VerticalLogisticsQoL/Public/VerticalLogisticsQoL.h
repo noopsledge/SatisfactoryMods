@@ -17,4 +17,5 @@ private:
 	void FixClearanceWarnings();
 	void AllowConnectionToExistingAttachment();
 	void PrepareCustomAttachmentHologram();
+	void NetworkVerticalAttachmentFlowDirection();
 };
