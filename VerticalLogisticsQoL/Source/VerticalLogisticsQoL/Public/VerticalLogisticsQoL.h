@@ -15,6 +15,7 @@ private:
 	void FixLiftOnAttachmentOffByHalf();
 	void FixAttachmentOnLiftOffByHalf();
 	void FixClearanceWarnings();
+	void FixMassDismantleVerticalAttachmentAndLifts();
 	void AllowConnectionToExistingAttachment();
 	void PrepareCustomAttachmentHologram();
 	void NetworkVerticalAttachmentFlowDirection();

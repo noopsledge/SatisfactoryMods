@@ -32,6 +32,7 @@ void FVerticalLogisticsQoLModule::StartupModule()
 		FixLiftOnAttachmentOffByHalf();
 		FixAttachmentOnLiftOffByHalf();
 		FixClearanceWarnings();
+		FixMassDismantleVerticalAttachmentAndLifts();
 		AllowConnectionToExistingAttachment();
 		PrepareCustomAttachmentHologram();
 		NetworkVerticalAttachmentFlowDirection();
@@ -292,6 +293,42 @@ void FVerticalLogisticsQoLModule::FixClearanceWarnings()
 						continue;	// Not going in the opposite direction.
 					ignoredActors.Add(connectedTo->GetOuterBuildable());
 				}
+			}
+		});
+}
+
+void FVerticalLogisticsQoLModule::FixMassDismantleVerticalAttachmentAndLifts()
+{
+	// When dismantling a vertical attachment, it will join the top and bottom lifts together and leave
+	// that behind. This is the desired behavior when dismantling just the attachment, but if you're
+	// trying to mass-dismantle everything together then (if the attachment gets dismantled first)
+	// you'll end up with a lift at the end that you don't want. This has been fixed by adding a
+	// dismantle dependency from the attachment to its lifts, so if they're getting dismantled together
+	// the lifts will go first and there'll therefore be nothing left for the attachment to merge.
+
+	SUBSCRIBE_METHOD_VIRTUAL_AFTER(IFGDismantleInterface::GetDismantleDependencies_Implementation,
+		static_cast<const IFGDismantleInterface*>(GetDefault<AFGBuildable>()),
+		[](const IFGDismantleInterface* buildable, TArray<AActor*>& out_dismantleDependencies)
+		{
+			auto* attachment = Cast<AFGBuildableConveyorAttachment>(static_cast<const AFGBuildable*>(buildable));
+			if (attachment == nullptr)
+				return;
+
+			const FName verticalName1 = AFGConveyorAttachmentHologram::mLiftConnection_Bottom;
+			const FName verticalName2 = AFGConveyorAttachmentHologram::mLiftConnection_Top;
+
+			for (auto* connection : TInlineComponentArray<UFGFactoryConnectionComponent*>(attachment))
+			{
+				const FName name = connection->GetFName();
+				if (name != verticalName1 && name != verticalName2)
+					continue;
+				UFGFactoryConnectionComponent* connectedComponent = connection->GetConnection();
+				if (connectedComponent == nullptr)
+					continue;
+				auto* lift = Cast<AFGBuildableConveyorLift>(connectedComponent->GetOuterBuildable());
+				if (lift == nullptr)
+					continue;
+				out_dismantleDependencies.Add(lift);
 			}
 		});
 }
