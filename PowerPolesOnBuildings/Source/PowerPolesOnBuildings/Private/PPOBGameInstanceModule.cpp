@@ -1,6 +1,5 @@
 #include "PPOBGameInstanceModule.h"
 
-#include "Buildables/FGBuildable.h"
 #include "Engine/SCS_Node.h"
 #include "Engine/SimpleConstructionScript.h"
 #include "FGAttachmentPointComponent.h"
@@ -38,15 +37,10 @@ void UPPOBGameInstanceModule::DispatchLifecycleEvent(ELifecyclePhase phase)
 	if (!WITH_EDITOR && phase == ELifecyclePhase::INITIALIZATION)
 	{
 		// Create attachment points for the buildings.
-		TSet<UClass*, DefaultKeyFuncs<UClass*>, TInlineSetAllocator<32>> seenDecorators;
-		for (auto&& [buildableClass, offset] : BuildingAttachmentPoints)
+		for (auto&& entry : BuildingAttachmentPoints)
 		{
-			UClass* decorationClass = buildableClass.GetDefaultObject()->GetDecorationTemplate();
-			checkf(decorationClass, TEXT("%s doesn't have a decoration template!"), *buildableClass->GetName());
-			if (bool seen; seenDecorators.Add(decorationClass, &seen), seen)
-				continue;	// Skip duplicates.
-			auto* blueprintClass = CastChecked<UBlueprintGeneratedClass>(decorationClass);
-			AddAttachmentPointComponent(blueprintClass, offset);
+			auto* blueprintClass = CastChecked<UBlueprintGeneratedClass>(entry.Key);
+			AddAttachmentPointComponent(blueprintClass, entry.Value);
 		}
 	}
 
