@@ -12,6 +12,6 @@ class VERTICALLOGISTICSQOL_API UVLQoLCDWrongLiftDirection : public UFGConstructD
 public:
 	UVLQoLCDWrongLiftDirection()
 	{
-		mDisqfualifyingText = INVTEXT("Wrong lift direction");
+		mDisqfualifyingText = INVTEXT("Wrong lift direction!");
 	}
 };
