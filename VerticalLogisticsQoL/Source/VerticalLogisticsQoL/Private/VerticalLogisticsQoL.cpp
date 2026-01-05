@@ -21,6 +21,26 @@ bool IsVerticalConnector(float normalUp)
 	return FMath::Abs(normalUp) > 0.5f;
 }
 
+bool CanConnectVertically(const AFGConveyorLiftHologram* lift, const UFGFactoryConnectionComponent* from, const UFGFactoryConnectionComponent* to, double maxVerticalDistance)
+{
+	static constexpr double HorizontalTolerance = 0.1;
+
+	const FVector toNormal = to->GetConnectorNormal();
+	if (!IsVerticalConnector(toNormal.Z))
+		return false;	// Not a vertical connection, not our problem.
+	const FVector fromLocation = from->GetConnectorLocation();
+	const FVector toLocation = to->GetConnectorLocation();
+	const FVector connectionVector = toLocation - fromLocation;
+	if (!FVector2D(connectionVector).IsNearlyZero(HorizontalTolerance))
+		return false;	// Not aligned horizontally with the lift.
+	if (FMath::Abs(connectionVector.Z) > maxVerticalDistance)
+		return false;	// Too far away vertically.
+	if ((toNormal.Z >= 0.0f) == (toLocation.Z >= lift->GetActorLocation().Z))
+		return false;	// Wrong side.
+
+	return true;
+}
+
 } // namespace
 
 void FVerticalLogisticsQoLModule::StartupModule()
@@ -335,11 +355,40 @@ void FVerticalLogisticsQoLModule::FixMassDismantleVerticalAttachmentAndLifts()
 
 void FVerticalLogisticsQoLModule::AllowConnectionToExistingAttachment()
 {
+	// Lifts look for connections a bit in front of the top transform, so they're much more likely to
+	// find the horizontal connections on an attachment even when going straight down through a
+	// vertical connection. If we've found a connection on an attachment, we should check to see if
+	// there's a vertical connection that's more suitable to use.
+
+	SUBSCRIBE_METHOD(UFGFactoryConnectionComponent::FindCompatibleOverlappingConnections,
+		[](auto& scope, UFGFactoryConnectionComponent* component, const FVector& location, const AActor* priorityActor, float radius)
+		{
+			UFGFactoryConnectionComponent* result = scope(component, location, priorityActor, radius);
+			if (result == nullptr)
+				return;
+
+			// Only care about connecting lifts to conveyor attachments.
+			auto* lift = Cast<AFGConveyorLiftHologram>(component->GetOwner());
+			if (lift == nullptr)
+				return;
+			auto* attachment = Cast<AFGBuildableConveyorAttachment>(result->GetOuterBuildable());
+			if (attachment == nullptr)
+				return;
+
+			for (auto* attachmentConnection : TInlineComponentArray<UFGFactoryConnectionComponent*>(attachment))
+			{
+				if (CanConnectVertically(lift, component, attachmentConnection, radius))
+				{
+					// Prioritize vertical connections.
+					scope.Override(attachmentConnection);
+					break;
+				}
+			}
+		});
+
 	// The base implementation filters out vertical connections because the normal for a lift connection
 	// points out horizontally, which it doesn't see as aligned with vertical connections so it doesn't
 	// allow them.
-
-	static constexpr double HorizontalTolerance = 0.1;
 
 	SUBSCRIBE_METHOD(AFGConveyorLiftHologram::CanConnectToConnection,
 		[](auto& scope, const AFGConveyorLiftHologram* hologram, UFGFactoryConnectionComponent* from, UFGFactoryConnectionComponent* to)
@@ -348,18 +397,9 @@ void FVerticalLogisticsQoLModule::AllowConnectionToExistingAttachment()
 				return;	// Already handled.
 			if (from == nullptr || to == nullptr)
 				return;	// Nothing to connect.
-			const FVector toNormal = to->GetConnectorNormal();
-			if (!IsVerticalConnector(toNormal.Z))
-				return;	// Not a vertical connection, not our problem.
-			const FVector toLocation = to->GetConnectorLocation();
-			const FVector connectionVector = toLocation - from->GetConnectorLocation();
-			if (!FVector2D(connectionVector).IsNearlyZero(HorizontalTolerance))
-				return;	// Not aligned horizontally with the lift.
-			if (FMath::Abs(connectionVector.Z) > hologram->mStepHeight + to->GetConnectorClearance())
-				return;	// Too far away vertically.
-			if ((toNormal.Z >= 0.0f) == (toLocation.Z >= hologram->GetActorLocation().Z))
-				return;	// Wrong side.
-			scope.Override(true);
+			const float maxVerticalDistance = hologram->mStepHeight + to->GetConnectorClearance();
+			if (CanConnectVertically(hologram, from, to, maxVerticalDistance))
+				scope.Override(true);
 		});
 }
 
