@@ -339,6 +339,8 @@ void FVerticalLogisticsQoLModule::AllowConnectionToExistingAttachment()
 	// points out horizontally, which it doesn't see as aligned with vertical connections so it doesn't
 	// allow them.
 
+	static constexpr double HorizontalTolerance = 0.1;
+
 	SUBSCRIBE_METHOD(AFGConveyorLiftHologram::CanConnectToConnection,
 		[](auto& scope, const AFGConveyorLiftHologram* hologram, UFGFactoryConnectionComponent* from, UFGFactoryConnectionComponent* to)
 		{
@@ -351,7 +353,7 @@ void FVerticalLogisticsQoLModule::AllowConnectionToExistingAttachment()
 				return;	// Not a vertical connection, not our problem.
 			const FVector toLocation = to->GetConnectorLocation();
 			const FVector connectionVector = toLocation - from->GetConnectorLocation();
-			if (!FMath::IsNearlyZero(connectionVector.X) || !FMath::IsNearlyZero(connectionVector.Y))
+			if (!FVector2D(connectionVector).IsNearlyZero(HorizontalTolerance))
 				return;	// Not aligned horizontally with the lift.
 			if (FMath::Abs(connectionVector.Z) > hologram->mStepHeight + to->GetConnectorClearance())
 				return;	// Too far away vertically.
