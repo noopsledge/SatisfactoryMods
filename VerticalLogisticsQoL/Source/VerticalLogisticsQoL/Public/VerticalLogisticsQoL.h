@@ -17,6 +17,7 @@ private:
 	void FixClearanceWarnings();
 	void FixMassDismantleVerticalAttachmentAndLifts();
 	void AllowConnectionToExistingAttachment();
+	void HideLiftArrowWhenSnappedTopToAttachment();
 	void PrepareCustomAttachmentHologram();
 	void NetworkVerticalAttachmentFlowDirection();
 };

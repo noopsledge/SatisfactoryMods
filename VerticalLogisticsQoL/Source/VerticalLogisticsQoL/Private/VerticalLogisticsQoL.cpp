@@ -54,6 +54,7 @@ void FVerticalLogisticsQoLModule::StartupModule()
 		FixClearanceWarnings();
 		FixMassDismantleVerticalAttachmentAndLifts();
 		AllowConnectionToExistingAttachment();
+		HideLiftArrowWhenSnappedTopToAttachment();
 		PrepareCustomAttachmentHologram();
 		NetworkVerticalAttachmentFlowDirection();
 	}
@@ -400,6 +401,35 @@ void FVerticalLogisticsQoLModule::AllowConnectionToExistingAttachment()
 			const float maxVerticalDistance = hologram->mStepHeight + to->GetConnectorClearance();
 			if (CanConnectVertically(hologram, from, to, maxVerticalDistance))
 				scope.Override(true);
+		});
+}
+
+void FVerticalLogisticsQoLModule::HideLiftArrowWhenSnappedTopToAttachment()
+{
+	// When the top of the lift is snapped to a vertical attachment, the arrow still points out
+	// horizontally even though the flow is vertical. It doesn't add much anyway, since the attachment
+	// has arrows of its own, so we're hiding it to avoid the confusion.
+
+	SUBSCRIBE_UOBJECT_METHOD_AFTER(AFGConveyorLiftHologram, PostHologramPlacement,
+		[](AFGConveyorLiftHologram* hologram, const FHitResult& hitResult, bool callForChildren)
+		{
+			USceneComponent* arrow = hologram->mArrowComponent;
+			if (arrow == nullptr)
+				return;
+
+			bool showArrow = true;
+
+			if (const UFGFactoryConnectionComponent* connection = hologram->mSnappedConnectionComponents[1])
+			{
+				const FName name = connection->GetFName();
+				if (name == AFGConveyorAttachmentHologram::mLiftConnection_Bottom
+					|| name == AFGConveyorAttachmentHologram::mLiftConnection_Top)
+				{
+					showArrow = false;
+				}
+			}
+
+			arrow->SetVisibility(showArrow);
 		});
 }
 
