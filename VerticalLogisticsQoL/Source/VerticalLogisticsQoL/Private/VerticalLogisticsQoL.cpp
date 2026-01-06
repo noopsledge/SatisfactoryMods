@@ -378,7 +378,8 @@ void FVerticalLogisticsQoLModule::AllowConnectionToExistingAttachment()
 
 			for (auto* attachmentConnection : TInlineComponentArray<UFGFactoryConnectionComponent*>(attachment))
 			{
-				if (CanConnectVertically(lift, component, attachmentConnection, radius))
+				if (component->CanSnapTo(attachmentConnection)
+					&& CanConnectVertically(lift, component, attachmentConnection, radius))
 				{
 					// Prioritize vertical connections.
 					scope.Override(attachmentConnection);
