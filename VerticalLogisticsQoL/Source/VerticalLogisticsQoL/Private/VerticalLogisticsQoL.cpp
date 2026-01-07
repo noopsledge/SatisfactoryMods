@@ -57,6 +57,7 @@ void FVerticalLogisticsQoLModule::StartupModule()
 		HideLiftArrowWhenSnappedTopToAttachment();
 		PrepareCustomAttachmentHologram();
 		NetworkVerticalAttachmentFlowDirection();
+		NetworkLiftMeshRotationFlag();
 	}
 }
 
@@ -634,6 +635,30 @@ void FVerticalLogisticsQoLModule::NetworkVerticalAttachmentFlowDirection()
 	auto* defaultBuildable = CastChecked<AFGBuildableConveyorAttachment>(buildableClass->GetDefaultObject());
 	SUBSCRIBE_METHOD_VIRTUAL_AFTER(AFGBuildable::GetLifetimeReplicatedProps, defaultBuildable, LifetimeRepHook(buildableClass));
 	SUBSCRIBE_METHOD_VIRTUAL_AFTER(AFGBuildableConveyorAttachment::BeginPlay, defaultBuildable, BeginPlayHook());
+}
+
+void FVerticalLogisticsQoLModule::NetworkLiftMeshRotationFlag()
+{
+	// AFGBuildableConveyorLift uses mIsBeltUsingInputRotation to determine the rotation of its mid
+	// meshes, but that flag isn't networked so non-authoritative clients calculate the wrong rotation.
+
+	UClass* liftClass = AFGBuildableConveyorLift::StaticClass();
+	FProperty* flagProperty = liftClass->FindPropertyByName(GET_MEMBER_NAME_CHECKED(AFGBuildableConveyorLift, mIsBeltUsingInputRotation));
+
+	if (flagProperty == nullptr || flagProperty->HasAnyPropertyFlags(CPF_Net))
+		return;
+
+	flagProperty->SetPropertyFlags(CPF_Net);
+	liftClass->ClassFlags &= ~CLASS_ReplicationDataIsSetUp;
+
+	SUBSCRIBE_UOBJECT_METHOD_AFTER(AFGBuildableConveyorLift, GetLifetimeReplicatedProps,
+		[flagProperty](const AFGBuildableConveyorLift* lift, TArray<FLifetimeProperty>& OutLifetimeProps)
+		{
+			RegisterReplicatedLifetimeProperty(flagProperty, OutLifetimeProps,
+			{
+				.Condition = COND_InitialOnly,
+			});
+		});
 }
 
 IMPLEMENT_MODULE(FVerticalLogisticsQoLModule, VerticalLogisticsQoL)

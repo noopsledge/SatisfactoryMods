@@ -20,4 +20,5 @@ private:
 	void HideLiftArrowWhenSnappedTopToAttachment();
 	void PrepareCustomAttachmentHologram();
 	void NetworkVerticalAttachmentFlowDirection();
+	void NetworkLiftMeshRotationFlag();
 };
