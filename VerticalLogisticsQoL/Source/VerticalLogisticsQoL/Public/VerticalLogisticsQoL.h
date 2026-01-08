@@ -16,6 +16,7 @@ private:
 	void FixAttachmentOnLiftOffByHalf();
 	void FixClearanceWarnings();
 	void FixMassDismantleVerticalAttachmentAndLifts();
+	void FixReverseLiftConnectionFromSnapPoint();
 	void AllowConnectionToExistingAttachment();
 	void HideLiftArrowWhenSnappedTopToAttachment();
 	void PrepareCustomAttachmentHologram();

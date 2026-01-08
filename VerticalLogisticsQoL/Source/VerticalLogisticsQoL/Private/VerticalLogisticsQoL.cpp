@@ -53,6 +53,7 @@ void FVerticalLogisticsQoLModule::StartupModule()
 		FixAttachmentOnLiftOffByHalf();
 		FixClearanceWarnings();
 		FixMassDismantleVerticalAttachmentAndLifts();
+		FixReverseLiftConnectionFromSnapPoint();
 		AllowConnectionToExistingAttachment();
 		HideLiftArrowWhenSnappedTopToAttachment();
 		PrepareCustomAttachmentHologram();
@@ -352,6 +353,38 @@ void FVerticalLogisticsQoLModule::FixMassDismantleVerticalAttachmentAndLifts()
 					continue;
 				out_dismantleDependencies.Add(lift);
 			}
+		});
+}
+
+void FVerticalLogisticsQoLModule::FixReverseLiftConnectionFromSnapPoint()
+{
+	// Lifts are configured such that their first connection is the input, and their second connection
+	// is the output. By default it will connect the input to the first snapped connection, but if
+	// that's also an input then it'll use the second snapped connection because you can't connect an
+	// input to another input. This works fine in a world where the only option is input or output, but
+	// it doesn't account for wall holes and conveyor poles; they could effectively be an input from the
+	// perspective of the lift, but their actual type is FCD_SNAP_ONLY so the lift won't do anything
+	// special because it sees that it isn't of type FCD_INPUT and therefore assumes that it's an
+	// output. If it doesn't swap them then it has the opposite problem where it tries to connect the
+	// lift output to a snapped output and that causes the connection to fail, so to help it out we're
+	// doing the swapping for it if we find a SNAP_ONLY connection that should really be treated as an
+	// input.
+
+	SUBSCRIBE_UOBJECT_METHOD(AFGConveyorLiftHologram, ConfigureComponents,
+		[](auto& scope, const AFGConveyorLiftHologram* hologram, AFGBuildable* inBuildable)
+		{
+			UFGFactoryConnectionComponent* connection0 = hologram->mSnappedConnectionComponents[0];
+			if (connection0 == nullptr || connection0->GetDirection() != EFactoryConnectionDirection::FCD_SNAP_ONLY)
+				return;
+			UFGFactoryConnectionComponent* connection1 = hologram->mSnappedConnectionComponents[1];
+			if (connection1 == nullptr || connection1->GetDirection() != EFactoryConnectionDirection::FCD_OUTPUT)
+				return;
+			auto* mutableHologram = const_cast<AFGConveyorLiftHologram*>(hologram);
+			mutableHologram->mSnappedConnectionComponents[0] = connection1;
+			mutableHologram->mSnappedConnectionComponents[1] = connection0;
+			scope(hologram, inBuildable);
+			mutableHologram->mSnappedConnectionComponents[0] = connection0;
+			mutableHologram->mSnappedConnectionComponents[1] = connection1;
 		});
 }
 
