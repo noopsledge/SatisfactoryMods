@@ -48,6 +48,7 @@ void FVerticalLogisticsQoLModule::StartupModule()
 	if constexpr (!WITH_EDITOR)
 	{
 		FixLostPassthroughLinks();
+		FixBrokenConnectionsWhenMergingInBlueprintDesigner();
 		FixHologramLocking();
 		FixLiftOnAttachmentOffByHalf();
 		FixAttachmentOnLiftOffByHalf();
@@ -164,6 +165,99 @@ void FVerticalLogisticsQoLModule::FixLostPassthroughLinks()
 	SUBSCRIBE_METHOD_AFTER(AFGBuildableConveyorLift::DuplicateLift, hook);
 	SUBSCRIBE_METHOD_AFTER(AFGBuildableConveyorLift::Merge, hook);
 	SUBSCRIBE_METHOD_AFTER(AFGBuildableConveyorLift::Split, hook);
+}
+
+void FVerticalLogisticsQoLModule::FixBrokenConnectionsWhenMergingInBlueprintDesigner()
+{
+	// When merging conveyor lifts, which can happen when deleting a vertical attachment, the game will
+	// set up the connections before it tells the lift about the blueprint designer. This causes the
+	// connections to fail when in a blueprint designer because it doesn't know that the lift is in
+	// there too and so it blocks the connections. The correct way to do this is to make sure that
+	// SetInsideBlueprintDesigner happens before the SetConnection calls, The game does this properly
+	// for splitting but not merging for some reason.
+
+	struct PendingMerge { UFGFactoryConnectionComponent* input; UFGFactoryConnectionComponent* output; };
+	thread_local const PendingMerge* t_pendingMerge;
+
+	SUBSCRIBE_UOBJECT_METHOD(AFGBuildableConveyorLift, BeginPlay,
+		[](auto& scope, AFGBuildableConveyorLift* lift)
+		{
+			// If this lift is being constructed as part of a merge operation, then we need to fix up the
+			// connections that would've been rejected earlier. Unfortunately this needs to happen before
+			// BeginPlay so that the lift gets the right meshes and clearance, but there's nothing that we can
+			// hook between Merge and BeginPlay so we'll have to hook BeginPlay for all lifts. It's only a
+			// thread-local read and one branch for non-merge lifts so it should be insignificant enough.
+			const PendingMerge* pendingMerge = t_pendingMerge;
+			if (UNLIKELY(pendingMerge != nullptr))
+			{
+				t_pendingMerge = nullptr;
+				if (UFGFactoryConnectionComponent* input = pendingMerge->input; IsValid(input))
+				{
+					UFGFactoryConnectionComponent* connection = lift->GetConnection0();
+					if (connection->GetConnection() == nullptr)
+						connection->SetConnection(input);
+				}
+				if (UFGFactoryConnectionComponent* output = pendingMerge->output; IsValid(output))
+				{
+					UFGFactoryConnectionComponent* connection = lift->GetConnection1();
+					if (connection->GetConnection() == nullptr)
+						connection->SetConnection(output);
+				}
+			}
+		});
+
+	SUBSCRIBE_METHOD(AFGBuildableConveyorLift::Merge,
+		([](auto& scope, const TArray<AFGBuildableConveyorLift*>& lifts)
+		{
+			if (lifts.Num() != 2)
+				return;
+
+			AFGBuildableConveyorLift* lift0 = lifts[0];
+			AFGBuildableConveyorLift* lift1 = lifts[1];
+
+			if (lift0 == nullptr || lift1 == nullptr)
+				return;
+
+			// If the lifts aren't in the same blueprint designer, then it isn't our problem.
+			{
+				const AFGBuildableBlueprintDesigner* designer = lift0->GetBlueprintDesigner();
+				if (designer == nullptr || designer != lift1->GetBlueprintDesigner())
+					return;
+			}
+
+			UFGFactoryConnectionComponent* input = nullptr;
+			UFGFactoryConnectionComponent* output = nullptr;
+
+			// Figure out what the input and output for the new lift will be.
+			{
+				UFGFactoryConnectionComponent* lift0Input = lift0->GetConnection0()->GetConnection();
+				UFGFactoryConnectionComponent* lift0Output = lift0->GetConnection1()->GetConnection();
+				UFGFactoryConnectionComponent* lift1Input = lift1->GetConnection0()->GetConnection();
+				UFGFactoryConnectionComponent* lift1Output = lift1->GetConnection1()->GetConnection();
+
+				if (lift0Input != nullptr && lift0Input->GetOuterBuildable() == lift1)
+				{
+					// Lift 0 is on the output side.
+					input = lift1Input;
+					output = lift0Output;
+				}
+				else if (lift0Output != nullptr && lift0Output->GetOuterBuildable() == lift1)
+				{
+					// Lift 0 is on the input side.
+					input = lift0Input;
+					output = lift1Output;
+				}
+				else
+				{
+					return;
+				}
+			}
+
+			const PendingMerge pendingMerge = { .input = input, .output = output, };
+			t_pendingMerge = &pendingMerge;
+			scope(lifts);
+			t_pendingMerge = nullptr;
+		}));
 }
 
 void FVerticalLogisticsQoLModule::FixHologramLocking()

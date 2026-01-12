@@ -11,6 +11,7 @@ public:
 
 private:
 	void FixLostPassthroughLinks();
+	void FixBrokenConnectionsWhenMergingInBlueprintDesigner();
 	void FixHologramLocking();
 	void FixLiftOnAttachmentOffByHalf();
 	void FixAttachmentOnLiftOffByHalf();
