@@ -316,10 +316,15 @@ void AVLQoLConveyorAttachmentHologram::UpdateHologramComponents()
 
 	// Update the main mesh to match the new buildbale.
 	{
+		UStaticMeshComponent* component = mGeneratedAbstractComponents[0];
+
 		UAbstractInstanceDataObject* abstractData = buildable->GetLightweightInstanceData();
 		check(abstractData && abstractData->HasValidInstanceData());
 		// Not using the public GetInstanceData() because that copies the entire array :(
-		mGeneratedAbstractComponents[0]->SetStaticMesh(abstractData->Instances[0].StaticMesh);
+		const FInstanceData& instance = abstractData->Instances[0];
+
+		component->SetStaticMesh(instance.StaticMesh);
+		component->SetRelativeTransform(instance.RelativeTransform);
 	}
 
 	// Collect all of the connections on the new buildable.
