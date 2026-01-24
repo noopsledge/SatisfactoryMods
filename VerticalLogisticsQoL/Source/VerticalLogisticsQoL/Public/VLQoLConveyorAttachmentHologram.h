@@ -6,7 +6,6 @@
 
 class AFGBuildableConveyorAttachment;
 enum class EFactoryConnectionDirection : uint8;
-class UFGFactoryConnectionComponent;
 class UFGFactorySettings;
 class UStaticMeshComponent;
 
@@ -79,11 +78,14 @@ private:
 	static constexpr int32 CONNECTION_COUNT = 4;
 
 	EVLQoLConveyorAttachmentMode CalculateAutoMode() const;
-	void UpdateRecipe();
+	bool UpdateRecipe();
 	void UpdateClearance();
-	void UpdateHologramComponents();
-	EFactoryConnectionDirection CalculateConnectionDirection(const UFGFactoryConnectionComponent* connection, FName connectionName) const;
+	void UpdateHologramComponents(const UFGFactorySettings* settings);
+	void UpdateVerticalConnections(const UFGFactorySettings* settings);
+	void SetConnectionDirection(int32 connectionIndex, EFactoryConnectionDirection direction, const UFGFactorySettings* settings);
 	static void UpdateArrowMesh(UStaticMeshComponent* arrowMesh, EFactoryConnectionDirection direction, const UFGFactorySettings* settings);
 
-	TArray<UStaticMeshComponent*, TInlineAllocator<CONNECTION_COUNT>> mArrowMeshes;
+	UStaticMeshComponent* mArrowMeshes[CONNECTION_COUNT] = {};
+	int32 mBottomConnectionIndex = -1;
+	int32 mTopConnectionIndex = -1;
 };

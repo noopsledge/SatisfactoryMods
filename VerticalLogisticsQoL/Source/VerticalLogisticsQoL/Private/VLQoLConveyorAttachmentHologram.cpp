@@ -1,7 +1,9 @@
 #include "VLQoLConveyorAttachmentHologram.h"
 
+#include "Algo/Copy.h"
 #include "Buildables/FGBuildableConveyorAttachment.h"
 #include "Buildables/FGBuildableConveyorLift.h"
+#include "FGComponentHelpers.h"
 #include "FGConstructDisqualifier.h"
 #include "FGFactoryConnectionComponent.h"
 #include "FGFactorySettings.h"
@@ -43,11 +45,10 @@ void AVLQoLConveyorAttachmentHologram::BeginPlay()
 	check(mDefaultBuildMode);
 	check(!mUseConveyorConnectionFrameMesh);
 	check(mUseConveyorConnectionArrowMesh);
-	check(mGeneratedAbstractComponents.Num() == 1 && mGeneratedAbstractComponents[0]->ComponentHasTag(HOLOGRAM_MESH_TAG));
 	check(mCachedFactoryConnectionComponents.Num() == CONNECTION_COUNT);
 
 	// Find the arrow mesh for each of the connection components.
-	for (UFGFactoryConnectionComponent* connection : mCachedFactoryConnectionComponents)
+	for (int32 i = 0; UFGFactoryConnectionComponent* connection : mCachedFactoryConnectionComponents)
 	{
 		switch (const EFactoryConnectionDirection direction = connection->GetDirection())
 		{
@@ -62,7 +63,7 @@ void AVLQoLConveyorAttachmentHologram::BeginPlay()
 			{
 				if (child->ComponentHasTag(meshTag))
 				{
-					mArrowMeshes.Add(CastChecked<UStaticMeshComponent>(child));
+					mArrowMeshes[i] = CastChecked<UStaticMeshComponent>(child);
 					goto found;
 				}
 			}
@@ -78,6 +79,7 @@ void AVLQoLConveyorAttachmentHologram::BeginPlay()
 			checkf(false, TEXT("Connection %s (in %s) has an unexpected direction"),
 				*connection->GetName(), *mBuildClass->GetName())
 		}
+		++i;
 	}
 
 	if (mConveyorAttachmentMode != EVLQoLConveyorAttachmentMode::Regular)
@@ -248,12 +250,21 @@ void AVLQoLConveyorAttachmentHologram::OnRep_ConveyorAttachmentMode()
 {
 	if (!HasActorBegunPlay())
 		return;
-	UpdateRecipe();
-	UpdateClearance();
-	UpdateHologramComponents();
+
+	UFGFactorySettings* settings = UFGFactorySettings::Get();
+	check(settings);
+
+	if (UpdateRecipe())
+	{
+		UpdateClearance();
+		UpdateHologramComponents(settings);
+	}
+
+	// Vertical connection directions can change even if the recipe doesn't.
+	UpdateVerticalConnections(settings);
 }
 
-void AVLQoLConveyorAttachmentHologram::UpdateRecipe()
+bool AVLQoLConveyorAttachmentHologram::UpdateRecipe()
 {
 	TSubclassOf<UFGRecipe> newRecipe;
 	TSubclassOf<AFGBuildableConveyorAttachment> newBuildClass;
@@ -266,7 +277,7 @@ void AVLQoLConveyorAttachmentHologram::UpdateRecipe()
 	// It's possible that the recipe doesn't change even if the attachment mode does, e.g. both up and
 	// down use the same vertical attachment recipe.
 	if (newRecipe == mRealRecipe)
-		return;
+		return false;
 
 	// Find the buildable from the recipe.
 	{
@@ -285,6 +296,8 @@ void AVLQoLConveyorAttachmentHologram::UpdateRecipe()
 	{
 		mBuildablePropertyNames.Add(it->GetFName());
 	}
+
+	return true;
 }
 
 void AVLQoLConveyorAttachmentHologram::UpdateClearance()
@@ -309,103 +322,148 @@ void AVLQoLConveyorAttachmentHologram::UpdateClearance()
 	}
 }
 
-void AVLQoLConveyorAttachmentHologram::UpdateHologramComponents()
+void AVLQoLConveyorAttachmentHologram::UpdateHologramComponents(const UFGFactorySettings* settings)
 {
-	const AFGBuildableConveyorAttachment* buildable = mRealBuildClass.GetDefaultObject();
-	check(buildable);
-
-	// Update the main mesh to match the new buildbale.
+	// Remove the previous buildable's meshes.
 	{
-		UStaticMeshComponent* component = mGeneratedAbstractComponents[0];
-
-		UAbstractInstanceDataObject* abstractData = buildable->GetLightweightInstanceData();
-		check(abstractData && abstractData->HasValidInstanceData());
-		// Not using the public GetInstanceData() because that copies the entire array :(
-		const FInstanceData& instance = abstractData->Instances[0];
-
-		component->SetStaticMesh(instance.StaticMesh);
-		component->SetRelativeTransform(instance.RelativeTransform);
+		TArray<USceneComponent*, TInlineAllocator<64>> componentsToDelete;
+		Algo::CopyIf(RootComponent->GetAttachChildren(), componentsToDelete,
+			[](USceneComponent* c) { return c && c->IsA<UMeshComponent>() && c->ComponentHasTag(HOLOGRAM_MESH_TAG); });
+		for (USceneComponent* c : componentsToDelete)
+			c->DestroyComponent();
 	}
 
-	// Collect all of the connections on the new buildable.
-	TArray<const USCS_Node*, TInlineAllocator<CONNECTION_COUNT>> buildableConnectionNodes;
+	// Clear local component caches.
+	mGeneratedAbstractComponents.Reset();
+	mBottomConnectionIndex = -1;
+	mTopConnectionIndex = -1;
+
+	struct BuildableConnection { const UFGFactoryConnectionComponent* component; FName name; };
+	TArray<BuildableConnection, TInlineAllocator<CONNECTION_COUNT>> buildableConnections;
+
+	// Process components from the new buildable.
 	{
-		auto* buildableClass = CastChecked<UBlueprintGeneratedClass>(buildable->GetClass());
-		for (const USCS_Node* node : buildableClass->SimpleConstructionScript->GetRootNodes())
-		{
-			if (node->ComponentClass->IsChildOf<UFGFactoryConnectionComponent>())
+		auto duplicator = FComponentDuplicator::CreateLambda(
+			[&](
+				USceneComponent* attachParent,
+				UActorComponent* componentTemplate,
+				const FName& componentName,
+				const FName& attachSocketName
+			) -> USceneComponent*
 			{
-				buildableConnectionNodes.Add(node);
-			}
-		}
-		check(buildableConnectionNodes.Num() == CONNECTION_COUNT);
+				if (attachParent == RootComponent && componentTemplate != nullptr)
+				{
+					if (componentTemplate->IsA<UMeshComponent>())
+					{
+						// Create base hologram mesh components.
+						return AFGHologram::SetupComponent(attachParent, componentTemplate, componentName, attachSocketName);
+					}
+					else if (componentTemplate->IsA<UFGFactoryConnectionComponent>())
+					{
+						// We need to keep the same connection components throughout the lifetime of the hologram
+						// because they're networked, so for now just keep hold of the new templates so we can apply
+						// them to the existing components later.
+						buildableConnections.Add(
+						{
+							.component = static_cast<const UFGFactoryConnectionComponent*>(componentTemplate),
+							.name = componentName,
+						});
+					}
+				}
+				return nullptr;
+			});
+		auto abstractInstanceDuplicator = FAbstractInstanceDuplicator::CreateLambda(
+			[&](USceneComponent* attachParent, const FInstanceData& instanceData) -> USceneComponent*
+			{
+				if (attachParent != RootComponent)
+					return nullptr;
+				return AFGHologram::SetupInstanceDataComponent(attachParent, instanceData);
+			});
+		FGComponentHelpers::DuplicateComponents(mRealBuildClass, RootComponent, duplicator, &abstractInstanceDuplicator);
 	}
 
-	UFGFactorySettings* settings = UFGFactorySettings::Get();
-	check(settings);
+	// Refresh the materials so that they're applied to the new meshes.
+	SetCustomizationData(mCustomizationData);
+	SetMaterialState(mPlacementMaterialState);
 
-	// Update the hologram connections to match the buildable ones.
+	// Update connections on the hologram to match the connections on the new buildable. The order
+	// doesn't matter because we're changing all of the relevant properties on the hologram component to
+	// make it look like its buildable counterpart, so it doesn't matter which one we match it up with.
+	// The only thing we can't change is the name because that has networking implications.
+	check(buildableConnections.Num() == CONNECTION_COUNT);
 	for (int32 i = 0; i != CONNECTION_COUNT; ++i)
 	{
 		UFGFactoryConnectionComponent* hologramConnection = mCachedFactoryConnectionComponents[i];
-		const USCS_Node* buildableConnectionNode = buildableConnectionNodes[i];
-
-		const UFGFactoryConnectionComponent* buildableConnection =
-			CastChecked<UFGFactoryConnectionComponent>(buildableConnectionNode->ComponentTemplate);
+		const BuildableConnection& buildableConnection = buildableConnections[i];
 
 		// This only works because we know that the connection is a root component, so we don't have a
 		// parent transform to update as well.
-		hologramConnection->SetRelativeTransform(buildableConnection->GetRelativeTransform());
+		hologramConnection->SetRelativeTransform(buildableConnection.component->GetRelativeTransform());
 
-		const EFactoryConnectionDirection connectionDirection =
-			CalculateConnectionDirection(buildableConnection, buildableConnectionNode->GetVariableName());
-
-		if (hologramConnection->GetDirection() != connectionDirection)
+		switch (const EFactoryConnectionDirection direction = buildableConnection.component->GetDirection())
 		{
-			hologramConnection->SetDirection(connectionDirection);
-			UpdateArrowMesh(mArrowMeshes[i], connectionDirection, settings);
+		case EFactoryConnectionDirection::FCD_ANY:
+			// The top and bottom connections tend to be set to FCD_ANY because their direction can change
+			// depending on the context. Keep hold of them for now and we'll update them when we have more info.
+			if (buildableConnection.name == mLiftConnection_Top)
+			{
+				mBottomConnectionIndex = i;
+				break;
+			}
+			if (buildableConnection.name == mLiftConnection_Bottom)
+			{
+				mTopConnectionIndex = i;
+				break;
+			}
+		default:
+			SetConnectionDirection(i, direction, settings);
 		}
 	}
 }
 
-EFactoryConnectionDirection AVLQoLConveyorAttachmentHologram::CalculateConnectionDirection(const UFGFactoryConnectionComponent* connection, FName connectionName) const
+void AVLQoLConveyorAttachmentHologram::UpdateVerticalConnections(const UFGFactorySettings* settings)
 {
-	const EFactoryConnectionDirection staticDirection = connection->GetDirection();
+	if (mBottomConnectionIndex < 0 && mTopConnectionIndex < 0)
+		return;	// No vertical connections.
 
-	if (staticDirection != EFactoryConnectionDirection::FCD_ANY)
-		return staticDirection;	// The direction is known.
-	if (connectionName != mLiftConnection_Top && connectionName != mLiftConnection_Bottom)
-		return staticDirection;	// Not a lift connection, not sure what to do with this.
+	EFactoryConnectionDirection bottomConnectionDirection = EFactoryConnectionDirection::FCD_ANY;
+	EFactoryConnectionDirection topConnectionDirection = EFactoryConnectionDirection::FCD_ANY;
 
 	// Use the vertical flow direction to determine what should be an input or an output.
-
-	bool flowUpwards;
-
 	switch (mConveyorAttachmentMode)
 	{
-	case EVLQoLConveyorAttachmentMode::VerticalUp:
-		flowUpwards = true;
-		break;
-
-	case EVLQoLConveyorAttachmentMode::VerticalDown:
-		flowUpwards = false;
-		break;
-
 	default:
-		// In auto mode, the direction is defined by the snapped lift.
-		if (auto* lift = Cast<AFGBuildableConveyorLift>(mSnappedConveyor))
+		AFGBuildableConveyorLift* lift;
+		if ((lift = Cast<AFGBuildableConveyorLift>(mSnappedConveyor)) != nullptr)
 		{
-			flowUpwards = lift->IsFlowUpwards();
-		}
-		else
-		{
-			return staticDirection;
+			if (lift->IsFlowUpwards())
+			{
+			case EVLQoLConveyorAttachmentMode::VerticalUp:
+				bottomConnectionDirection = EFactoryConnectionDirection::FCD_INPUT;
+				topConnectionDirection = EFactoryConnectionDirection::FCD_OUTPUT;
+			}
+			else
+			{
+			case EVLQoLConveyorAttachmentMode::VerticalDown:
+				bottomConnectionDirection = EFactoryConnectionDirection::FCD_OUTPUT;
+				topConnectionDirection = EFactoryConnectionDirection::FCD_INPUT;
+			}
 		}
 	}
 
-	return flowUpwards == (connectionName == mLiftConnection_Top)
-		? EFactoryConnectionDirection::FCD_INPUT
-		: EFactoryConnectionDirection::FCD_OUTPUT;
+	if (mBottomConnectionIndex >= 0)
+		SetConnectionDirection(mBottomConnectionIndex, bottomConnectionDirection, settings);
+	if (mTopConnectionIndex >= 0)
+		SetConnectionDirection(mTopConnectionIndex, topConnectionDirection, settings);
+}
+
+void AVLQoLConveyorAttachmentHologram::SetConnectionDirection(int32 connectionIndex, EFactoryConnectionDirection direction, const UFGFactorySettings* settings)
+{
+	UFGFactoryConnectionComponent* connection = mCachedFactoryConnectionComponents[connectionIndex];
+	if (connection->GetDirection() == direction)
+		return;
+	connection->SetDirection(direction);
+	UpdateArrowMesh(mArrowMeshes[connectionIndex], direction, settings);
 }
 
 void AVLQoLConveyorAttachmentHologram::UpdateArrowMesh(UStaticMeshComponent* arrowMesh, EFactoryConnectionDirection direction, const UFGFactorySettings* settings)
