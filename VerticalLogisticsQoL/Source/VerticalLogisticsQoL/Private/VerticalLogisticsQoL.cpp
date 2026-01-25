@@ -11,6 +11,8 @@
 #include "Patching/NativeHookManager.h"
 #include "VLQoLGameInstanceModule.h"
 
+DEFINE_LOG_CATEGORY(LogVerticalLogisticsQoL)
+
 namespace
 {
 
@@ -599,10 +601,6 @@ void FVerticalLogisticsQoLModule::NetworkVerticalAttachmentFlowDirection()
 	// future updates, but that's the same for any of the game structures that we access normally too so
 	// I don't think that's any more of a problem. The only issue would be if another mod is equally
 	// mischievous and has another use for that padding...
-	//
-	// If the padding disappears in the future, plan B is to remove the mHologramOverrides property and
-	// use that space instead; our new hologram makes that property obselete. However that's more likely
-	// to be noticed by other mods so that's being left as a last resort.
 
 	static constexpr size_t isUpwardsFlowOffset =
 		STRUCT_OFFSET(AFGBuildableConveyorAttachment, mCachedInventorySize)

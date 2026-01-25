@@ -5,6 +5,7 @@
 #include "VLQoLGameInstanceModule.generated.h"
 
 class AFGConveyorAttachmentHologram;
+struct FStreamableHandle;
 class UFGRecipe;
 
 UCLASS()
@@ -34,14 +35,16 @@ public:
 	virtual void DispatchLifecycleEvent(ELifecyclePhase phase) override;
 
 protected:
-	/// Recipes for the regular (non-vertical) versions of the conveyor attachments.
-	/// Don't put the vertical versions here, they'll be discovered automatically.
+	/// Conveyor attachment hologram that the base game uses.
 	UPROPERTY(EditDefaultsOnly)
-	TArray<TSubclassOf<UFGRecipe>> RegularConveyorAttachmentRecipes;
+	TSubclassOf<AFGConveyorAttachmentHologram> DefaultConveyorAttachmentHologram;
 
 	/// Class that will replace the default conveyor attachment hologram.
 	UPROPERTY(EditDefaultsOnly)
 	TSubclassOf<AFGConveyorAttachmentHologram> HookConveyorAttachmentHologram;
+
+private:
+	void FinishSetup(const FStreamableHandle* loadRequest);
 
 	UPROPERTY()
 	TArray<UObject*> CDOEdits;
